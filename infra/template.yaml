@@ -24,6 +24,18 @@ Parameters:
     Default: ''
     Description: Groq API key, injected only into ProcessAudioFunction. Required when TranscriptionProviderName=groq. Never commit a value.
 
+  FrontendOrigin:
+    Type: String
+    Default: http://localhost:5173
+    Description: Origin of the deployed frontend (e.g. https://main.xxxx.amplifyapp.com, no trailing slash). Allowed by S3 CORS, the HTTP API and the Lambda CORS headers, in addition to http://localhost:5173 for local dev.
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: Optional email subscribed to the pipeline alarm topic. Leave empty to create the topic without a subscriber (SNS sends a confirmation email that must be clicked).
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+
 Globals:
   Function:
     Timeout: 60
@@ -75,6 +87,7 @@ Resources:
         CorsRules:
           - AllowedOrigins:
               - http://localhost:5173
+              - !Ref FrontendOrigin
             AllowedMethods:
               - PUT
             AllowedHeaders:
@@ -381,7 +394,7 @@ Resources:
           # Demo-only CORS: the Vite dev server origin by default. Override
           # per deployment (e.g. a deployed frontend's real origin) rather
           # than widening this to "*" once real user data is involved.
-          ELDERLINK_CORS_ORIGIN: http://localhost:5173
+          ELDERLINK_CORS_ORIGIN: !Ref FrontendOrigin
       Events:
         GetTimeline:
           Type: HttpApi
@@ -439,7 +452,7 @@ Resources:
         Variables:
           CARE_EVENTS_TABLE_NAME: !Ref CareEventsTable
           ELDERLINK_AWS_REGION: us-east-1
-          ELDERLINK_CORS_ORIGIN: http://localhost:5173
+          ELDERLINK_CORS_ORIGIN: !Ref FrontendOrigin
       Events:
         UpdateCareEventStatus:
           Type: HttpApi
@@ -499,7 +512,7 @@ Resources:
           AUDIO_BUCKET_NAME: !Ref AudioBucket
           ELDERLINK_AWS_REGION: us-east-1
           DEFAULT_CARE_RECIPIENT_ID: demo-dad
-          ELDERLINK_CORS_ORIGIN: http://localhost:5173
+          ELDERLINK_CORS_ORIGIN: !Ref FrontendOrigin
       Events:
         AudioUploadUrl:
           Type: HttpApi
@@ -556,7 +569,7 @@ Resources:
         Variables:
           FLAG_NOTIFICATIONS_TOPIC_ARN: !Ref FlagNotificationsTopic
           ELDERLINK_AWS_REGION: us-east-1
-          ELDERLINK_CORS_ORIGIN: http://localhost:5173
+          ELDERLINK_CORS_ORIGIN: !Ref FrontendOrigin
       Events:
         NotifyFlag:
           Type: HttpApi
@@ -590,6 +603,62 @@ Resources:
                   - sns:ListSubscriptionsByTopic
                 Resource: !Ref FlagNotificationsTopic
 
+  # Cheap observability: any error from the two pipeline Lambdas (S3 audio ->
+  # transcript -> care events) raises an alarm that publishes to a dedicated
+  # topic. Separate from FlagNotificationsTopic because that topic's
+  # per-recipient filter policies would drop these messages.
+  PipelineAlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: elderlink-pipeline-alarms
+      DisplayName: ElderLink pipeline alarms
+
+  PipelineAlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref PipelineAlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  ProcessAudioErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: elderlink-process-audio-errors
+      AlarmDescription: ProcessAudio (transcription) Lambda reported at least one error
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ProcessAudioFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref PipelineAlarmTopic
+
+  ExtractEventsErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: elderlink-extract-events-errors
+      AlarmDescription: ExtractEvents Lambda reported at least one error
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ExtractEventsFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref PipelineAlarmTopic
+
   # CORS is also configured at the HTTP API level (in addition to the
   # headers GetTimelineFunction/AudioUploadUrlFunction themselves return)
   # so OPTIONS preflight requests are answered by API Gateway directly,
@@ -601,6 +670,7 @@ Resources:
       CorsConfiguration:
         AllowOrigins:
           - http://localhost:5173
+          - !Ref FrontendOrigin
         AllowMethods:
           - GET
           - POST
@@ -610,6 +680,10 @@ Resources:
           - Content-Type
 
 Outputs:
+  PipelineAlarmTopicArn:
+    Description: SNS topic that receives pipeline Lambda error alarms
+    Value: !Ref PipelineAlarmTopic
+
   AudioBucketName:
     Description: Name of the S3 bucket for audio uploads and transcripts
     Value: !Ref AudioBucket
