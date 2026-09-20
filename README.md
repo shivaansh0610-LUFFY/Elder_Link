@@ -9,7 +9,7 @@
 **Speak → transcribe → structure → verify → hand off.**
 A serverless AWS pipeline, a safety-first data model, and a caregiver UI, running live.
 
-**Live demo: https://main.d1q63nhpu2yil8.amplifyapp.com** (API: `https://zu35plf1yb.execute-api.us-east-1.amazonaws.com`)
+**Live demo: https://main.daq0fog5qwn9u.amplifyapp.com** (API: `https://jx12zvly32.execute-api.us-east-1.amazonaws.com`)
 
 `React + Vite` · `S3` · `EventBridge` · `Lambda` · `DynamoDB` · `HTTP API` · `SNS` · `CloudWatch` · `Amplify Hosting` · `AWS SAM`
 
@@ -21,8 +21,8 @@ A serverless AWS pipeline, a safety-first data model, and a caregiver UI, runnin
 
 | | |
 |---|---|
-| **App (public HTTPS)** | https://main.d1q63nhpu2yil8.amplifyapp.com |
-| **API** | https://zu35plf1yb.execute-api.us-east-1.amazonaws.com |
+| **App (public HTTPS)** | https://main.daq0fog5qwn9u.amplifyapp.com |
+| **API** | https://jx12zvly32.execute-api.us-east-1.amazonaws.com |
 | **Sample API call** | `GET /care-recipients/demo-dad/timeline` |
 | **Hosting** | AWS Amplify Hosting (frontend) · AWS SAM stack `elderlink-audio-pipeline` in `us-east-1` (backend) |
 | **Demo care recipient** | `demo-dad` |
@@ -30,11 +30,11 @@ A serverless AWS pipeline, a safety-first data model, and a caregiver UI, runnin
 **Try it in 60 seconds**
 
 1. Open the app and go to **Timeline** (deep links work, e.g. `/timeline`).
-2. Tap **Tap to speak**, record a short note and stop. It is uploaded straight to S3 and turns into a Care Event.
+2. Tap **Tap to speak**, say a short note **in English** (e.g. "My sister is ill today. She needs to see the doctor tomorrow.") and stop. It is uploaded straight to S3 and turns into a Care Event.
 3. Open the event, review its evidence, and mark it **Verified** or **Keep uncertain**. The decision is saved to the backend.
 4. In **Care Circle**, add a caregiver email, then flag an event. Confirm the one-time SNS subscription email, flag again, and the alert email arrives.
 
-**Read this before judging:** the deployed stack runs the `mock` transcription and extraction providers, so a recording produces a canned sample transcript, not the words you spoke. There is no authentication (open demo API), and Care Circle and patients are stored in your browser. Details are in [Honest status](#honest-status).
+**Read this before judging:** speech is transcribed for real by Groq Whisper, but event extraction is a deterministic rule-based provider (LLM extraction via Amazon Bedrock is built but blocked by account verification). **Speak English**: Hindi is transcribed but produces no event. There is no authentication (open demo API), and Care Circle and patients are stored in your browser. Details are in [Honest status](#honest-status).
 
 ## The problem nobody is building for
 
@@ -75,7 +75,7 @@ flowchart LR
   B -- "2. PUT audio (no AWS creds in browser)" --> S3[("S3<br/>audio/")]
   S3 -- "Object Created" --> EB{{"EventBridge"}}
   EB --> PA["Lambda<br/>process_audio"]
-  PA -- "TranscriptionProvider" --> T["mock provider (deployed)<br/>Groq / Deepgram / OpenAI / Voxtral<br/>implemented, not enabled"]
+  PA -- "TranscriptionProvider" --> T["Groq Whisper (deployed)<br/>Deepgram / OpenAI / Voxtral / mock<br/>selectable"]
   PA --> S3T[("S3<br/>transcripts/")]
   S3T -- "Object Created" --> EB
   EB --> EX["Lambda<br/>extract_events"]
@@ -99,7 +99,7 @@ Both AI stages sit behind small interfaces, so providers change with **one envir
 
 | Stage | Interface | Providers |
 |---|---|---|
-| Transcription | `TranscriptionProvider` | `groq` (implemented, not deployed), `deepgram`, `openai`, `voxtral` (Amazon Bedrock), `mock` (deployed) |
+| Transcription | `TranscriptionProvider` | `groq` (deployed), `deepgram`, `openai`, `voxtral` (Amazon Bedrock), `mock` |
 | Extraction | `ExtractionProvider` | `mock` (deterministic rules, deployed), `bedrock` (implemented, not enabled) |
 
 Every provider fails **loudly** with a safe, key-scrubbed error, and there is no silent fallback to mock. A failed transcription is recorded as `status: failed` and never becomes a fabricated event.
@@ -108,7 +108,7 @@ Every provider fails **loudly** with a safe, key-scrubbed error, and there is no
 
 - The deployed HTTP API serves the timeline (`GET /care-recipients/demo-dad/timeline`), and CORS preflights for the Amplify origin succeed on the timeline, upload-URL and notify routes.
 - A presigned `PUT` from the deployed origin lands audio under `audio/`, which triggers `process_audio`, writes a transcript under `transcripts/`, triggers `extract_events`, writes a Care Event to DynamoDB, and the event appears in the timeline API.
-- **Transcription and extraction currently use the `mock` providers**, so the transcript is a canned sample and not the words that were spoken. The pipeline wiring is real; the AI providers are not switched on (see below).
+- **Real transcription:** a spoken English note is transcribed by Groq `whisper-large-v3-turbo` (`provider: groq` in the transcript artifact) and appears as a Care Event in about 10 to 15 seconds. **Extraction is the rule-based provider**, so it keeps only claims it recognises (for example "She needs to see the doctor tomorrow" becomes an `appointment`).
 - Verify and Keep Uncertain decisions persist via the least-privilege PATCH Lambda.
 - **498 automated backend tests**, with all HTTP mocked so none call a real provider. They cover every provider's error paths, key scrubbing and the full `process_audio` flow.
 - A Care Event **evaluation harness** ([`evaluation/`](evaluation)) scores extractors against 16 hand-written golden cases covering negation, secondhand claims, contradictions and unsupported inference.
@@ -119,11 +119,11 @@ We would rather you hear our limits from us.
 
 | Area | State |
 |---|---|
-| Voice → transcript | **Mock provider deployed.** The Groq, Deepgram, OpenAI and Voxtral providers are implemented and unit-tested, but the live stack returns a canned transcript. Real speech is not transcribed on the deployed stack. |
+| Voice → transcript | **Groq `whisper-large-v3-turbo` deployed and verified** on real English speech from the hosted origin. Deepgram, OpenAI and Voxtral are implemented and selectable. |
 | Transcript → Care Events | Deployed with the **deterministic rule-based extractor**, which handles simple English caregiver phrasing. |
 | LLM extraction / Voxtral (Amazon Bedrock) | Implemented and unit-tested, but **not enabled**: Bedrock model access is not yet verified for our account. Enabling it is a configuration change (`EXTRACTION_PROVIDER=bedrock`, `TranscriptionProviderName=voxtral`). We make no claim of live Bedrock use. |
-| Audio format | Browsers record `audio/webm`, which Voxtral does not accept. The mock path is unaffected; a Bedrock/Voxtral switch would need a transcode step or a different provider. |
-| Hindi voice notes | Not supported by the rule-based extractor (needs LLM extraction enabled). |
+| Audio format | Browsers record `audio/webm` (Safari `audio/mp4`); Groq accepts both directly, so no transcoding is needed. Voxtral does not accept webm. |
+| Hindi voice notes | Transcribed correctly (Devanagari) but the rule-based extractor cannot read them, so no event is created until LLM extraction is enabled. |
 | Audio timestamps in the UI | Not displayed yet (`startTime` / `endTime` are null in the API). |
 | Authentication | **None, by design for the hackathon.** The API is open, and anyone with the URL can read or write the demo care recipient (`demo-dad`). CORS restricts browsers, not other clients. |
 | Care Circle and patients | Stored in the **browser** (`localStorage`), not the backend. They are per-device and are not shared between caregivers. The only backend-side Care Circle piece is the SNS email delivery. |
@@ -169,7 +169,7 @@ sam deploy --stack-name elderlink-audio-pipeline --region us-east-1 \
   --parameter-overrides TranscriptionProviderName=groq GroqApiKey="$GROQ_API_KEY"
 ```
 
-`TranscriptionProviderName=mock` (the default) needs no key and is what the live stack runs.
+`TranscriptionProviderName=mock` (the default) needs no key and is the one-line rollback; the live stack runs `groq`.
 
 For a hosted frontend, pass its origin so S3, the HTTP API and the Lambdas allow it (localhost:5173 is always allowed):
 
